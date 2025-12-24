@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mind Set - Maze Game</title>
+    <style>
+        body {
+            margin: 0; padding: 0;
+            background-color: #2c3e50;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            height: 100vh; overflow: hidden;
+            user-select: none;
+        }
+        
+        #startScreen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(44, 62, 80, 0.98);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            z-index: 10; text-align: center;
+        }
+        
+        h1 { margin: 10px 0; font-size: 32px; color: #f1c40f; text-shadow: 2px 2px #000; letter-spacing: 2px; }
+        p { font-size: 16px; color: #ecf0f1; margin-bottom: 30px; }
+
+        .btn {
+            padding: 15px 40px; font-size: 20px;
+            background-color: #e74c3c; color: white;
+            border: none; border-radius: 50px;
+            cursor: pointer; margin: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+        }
+        .btn:active { transform: scale(0.95); }
+        .btn-reset { background-color: #7f8c8d; font-size: 14px; padding: 10px 20px; }
+
+        #gameArea { display: none; flex-direction: column; align-items: center; }
+        #info { margin-bottom: 10px; font-size: 20px; font-weight: bold; color: #f1c40f; }
+        
+        canvas {
+            background-color: #ecf0f1;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            border-radius: 8px;
+        }
+        #controls { margin-top: 15px; font-size: 14px; color: #bdc3c7; }
+
+    </style>
+</head>
+<body>
+
+    <div id="startScreen">
+        <h1>MIND SET</h1>
+        <p>1000 Levels of Maze Puzzle</p>
+        <button class="btn" onclick="startGame()">CONTINUE GAME</button>
+        <br>
+        <button class="btn btn-reset" onclick="resetProgress()">Reset Level 1</button>
+    </div>
+
+    <div id="gameArea">
+        <div id="info">Level: 1</div>
+        <canvas id="mazeCanvas"></canvas>
+        <div id="controls">Swipe screen or use Arrow Keys</div>
+    </div>
+
+<script>
+    const canvas = document.getElementById("mazeCanvas");
+    const ctx = canvas.getContext("2d");
+    const infoDisplay = document.getElementById("info");
+    const startScreen = document.getElementById("startScreen");
+    const gameArea = document.getElementById("gameArea");
+    const startBtn = document.querySelector(".btn"); // Continue button
+
+    let cols, rows, size;
+    let grid = [], stack = [];
+    let current;
+    let player = { col: 0, row: 0 };
+    let goal = { col: 0, row: 0 };
+    let level = 1;
+    let audioCtx = null;
+
+    let touchStartX = 0, touchStartY = 0;
+
+    // --- Load Saved Game ---
+    // গেম লোড হওয়ার সাথে সাথে চেক করবে আগে কোনো সেভ আছে কিনা
+    window.onload = function() {
+        if (localStorage.getItem("mindSetLevel")) {
+            level = parseInt(localStorage.getItem("mindSetLevel"));
+            startBtn.innerText = "CONTINUE LEVEL " + level;
+        } else {
+            startBtn.innerText = "START GAME";
+        }
+    };
+
+    function saveProgress() {
+        localStorage.setItem("mindSetLevel", level);
+    }
+
+    function resetProgress() {
+        if(confirm("Are you sure you want to delete progress and start from Level 1?")) {
+            localStorage.removeItem("mindSetLevel");
+            level = 1;
+            startBtn.innerText = "START GAME";
+            alert("Progress Reset!");
+        }
+    }
+
+    // --- Audio System ---
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    function playSound(type) {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        if (type === 'move') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.1);
+            gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+        } else if (type === 'win') {
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+            osc.frequency.setValueAtTime(800, audioCtx.currentTime + 0.1);
+            gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+        }
+    }
+
+    // --- Game Logic ---
+    function startGame() {
+        initAudio();
+        startScreen.style.display = "none";
+        gameArea.style.display = "flex";
+        setupLevel();
+    }
+
+    function setupLevel() {
+        // Difficulty Logic
+        let baseSize = 5;
+        let difficulty = Math.floor((level - 1) / 3); // প্রতি ৩ লেভেলে সাইজ বাড়বে
+        let gridDims = baseSize + difficulty;
+        
+        let maxSize = Math.min(window.innerWidth - 30, window.innerHeight - 150);
+        size = Math.floor(maxSize / gridDims);
+        if (size < 12) size = 12; // Minimum size limit
+
+        cols = gridDims;
+        rows = gridDims;
+
+        canvas.width = cols * size;
+        canvas.height = rows * size;
+
+        // Generate Maze
+        grid = []; stack = [];
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                grid.push(new Cell(c, r));
+            }
+        }
+        current = grid[0];
+        generateMaze();
+
+        player = { col: 0, row: 0 };
+        goal = { col: cols - 1, row: rows - 1 };
+
+        infoDisplay.innerText = "Level: " + level;
+        draw();
+    }
+
+    function generateMaze() {
+        let total = cols * rows;
+        current.visited = true;
+        while (true) {
+            let next = current.checkNeighbors();
+            if (next) {
+                next.visited = true;
+                stack.push(current);
+                removeWalls(current, next);
+                current = next;
+            } else if (stack.length > 0) {
+                current = stack.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
+    function draw() {
+        ctx.fillStyle = "#ecf0f1";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (let i = 0; i < grid.length; i++) {
+            grid[i].show();
+        }
+
+        // Draw Goal
+        ctx.fillStyle = "#f1c40f";
+        ctx.fillRect(goal.col * size + 2, goal.row * size + 2, size - 4, size - 4);
+
+        // Draw Player
+        ctx.fillStyle = "#e74c3c";
+        ctx.fillRect(player.col * size + 3, player.row * size + 3, size - 6, size - 6);
+    }
+
+    class Cell {
+        constructor(c, r) {
+            this.c = c; this.r = r;
+            this.visited = false;
+            this.walls = [true, true, true, true];
+        }
+        checkNeighbors() {
+            let neighbors = [];
+            let top = grid[index(this.c, this.r - 1)];
+            let right = grid[index(this.c + 1, this.r)];
+            let bottom = grid[index(this.c, this.r + 1)];
+            let left = grid[index(this.c - 1, this.r)];
+            if (top && !top.visited) neighbors.push(top);
+            if (right && !right.visited) neighbors.push(right);
+            if (bottom && !bottom.visited) neighbors.push(bottom);
+            if (left && !left.visited) neighbors.push(left);
+            if (neighbors.length > 0) return neighbors[Math.floor(Math.random() * neighbors.length)];
+            return undefined;
+        }
+        show() {
+            let x = this.c * size; let y = this.r * size;
+            ctx.strokeStyle = "#34495e"; ctx.lineWidth = 2; ctx.beginPath();
+            if (this.walls[0]) { ctx.moveTo(x, y); ctx.lineTo(x + size, y); }
+            if (this.walls[1]) { ctx.moveTo(x + size, y); ctx.lineTo(x + size, y + size); }
+            if (this.walls[2]) { ctx.moveTo(x + size, y + size); ctx.lineTo(x, y + size); }
+            if (this.walls[3]) { ctx.moveTo(x, y + size); ctx.lineTo(x, y); }
+            ctx.stroke();
+        }
+    }
+
+    function index(c, r) {
+        if (c < 0 || r < 0 || c > cols - 1 || r > rows - 1) return -1;
+        return c + r * cols;
+    }
+
+    function removeWalls(a, b) {
+        let x = a.c - b.c;
+        if (x === 1) { a.walls[3] = false; b.walls[1] = false; }
+        if (x === -1) { a.walls[1] = false; b.walls[3] = false; }
+        let y = a.r - b.r;
+        if (y === 1) { a.walls[0] = false; b.walls[2] = false; }
+        if (y === -1) { a.walls[2] = false; b.walls[0] = false; }
+    }
+
+    function movePlayer(dir) {
+        let currentCell = grid[index(player.col, player.row)];
+        let moved = false;
+        if (dir === 0 && !currentCell.walls[0]) { player.row--; moved = true; }
+        else if (dir === 1 && !currentCell.walls[1]) { player.col++; moved = true; }
+        else if (dir === 2 && !currentCell.walls[2]) { player.row++; moved = true; }
+        else if (dir === 3 && !currentCell.walls[3]) { player.col--; moved = true; }
+
+        if (moved) {
+            playSound('move');
+            draw();
+            checkWin();
+        }
+    }
+
+    function checkWin() {
+        if (player.col === goal.col && player.row === goal.row) {
+            playSound('win');
+            level++;
+            saveProgress(); // লেভেল বাড়ার সাথে সাথে সেভ হবে
+            
+            if (level > 1000) {
+                alert("Game Finished!");
+                level = 1; saveProgress();
+                location.reload();
+            } else {
+                setTimeout(setupLevel, 200);
+            }
+        }
+    }
+
+    // Controls
+    document.addEventListener('keydown', (e) => {
+        if (gameArea.style.display === "none") return;
+        if (["ArrowUp", "w"].includes(e.key)) movePlayer(0);
+        else if (["ArrowRight", "d"].includes(e.key)) movePlayer(1);
+        else if (["ArrowDown", "s"].includes(e.key)) movePlayer(2);
+        else if (["ArrowLeft", "a"].includes(e.key)) movePlayer(3);
+    });
+
+    canvas.addEventListener('touchstart', (e) => {
+        touchStartX = e.changedTouches[0].screenX;
+        touchStartY = e.changedTouches[0].screenY;
+    }, {passive: false});
+
+    canvas.addEventListener('touchend', (e) => {
+        if (gameArea.style.display === "none") return;
+        let touchEndX = e.changedTouches[0].screenX;
+        let touchEndY = e.changedTouches[0].screenY;
+        let xDiff = touchEndX - touchStartX;
+        let yDiff = touchEndY - touchStartY;
+        
+        if (Math.abs(xDiff) > Math.abs(yDiff)) {
+            if (Math.abs(xDiff) > 20) xDiff > 0 ? movePlayer(1) : movePlayer(3);
+        } else {
+            if (Math.abs(yDiff) > 20) yDiff > 0 ? movePlayer(2) : movePlayer(0);
+        }
+    }, {passive: false});
+    
+    window.addEventListener('resize', () => {
+        if(gameArea.style.display !== "none") setupLevel();
+    });
+
+</script>
+</body>
+</html>
